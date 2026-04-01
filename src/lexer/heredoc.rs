@@ -118,6 +118,10 @@ impl Lexer<'_> {
 
             content.push_str(&line);
             content.push('\n');
+
+            if content.len() > super::MAX_INPUT_SIZE {
+                break;
+            }
         }
 
         content
