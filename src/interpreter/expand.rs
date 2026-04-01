@@ -260,11 +260,17 @@ impl Interpreter<'_> {
                 if let Some(ref sub) = param.subscript {
                     let sub_str = self.expand_word(sub)?;
                     if sub_str == "@" || sub_str == "*" {
+                        if let Some(assoc) = self.state.assoc_arrays.get(&param.name) {
+                            return Ok(assoc.len().to_string());
+                        }
                         return Ok(self.state.array_len(&param.name).to_string());
                     }
                 }
             }
             if let ParamOp::ArrayKeys { .. } = op {
+                if let Some(assoc) = self.state.assoc_arrays.get(&param.name) {
+                    return Ok(assoc.keys().map(String::as_str).collect::<Vec<_>>().join(" "));
+                }
                 let len = self.state.array_len(&param.name);
                 let indices: Vec<String> = (0..len).map(|i| i.to_string()).collect();
                 return Ok(indices.join(" "));
@@ -274,9 +280,13 @@ impl Interpreter<'_> {
         if let Some(ref sub) = param.subscript {
             let sub_str = self.expand_word(sub)?;
             let arr_value = if sub_str == "@" || sub_str == "*" {
-                self.state
-                    .get_array(&param.name)
-                    .map(|arr| arr.join(" "))
+                if let Some(assoc) = self.state.assoc_arrays.get(&param.name) {
+                    Some(assoc.values().cloned().collect::<Vec<_>>().join(" "))
+                } else {
+                    self.state
+                        .get_array(&param.name)
+                        .map(|arr| arr.join(" "))
+                }
             } else if let Some(assoc) = self.state.assoc_arrays.get(&param.name) {
                 assoc.get(&sub_str).cloned()
             } else if let Ok(idx) = sub_str.parse::<usize>() {

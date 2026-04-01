@@ -326,6 +326,11 @@ impl Interpreter<'_> {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         self.state.set_array_element(&arr_name, idx, value, self.limits.max_array_elements)
                             .map_err(|e| ShellSignal::Error(Error::Exec(ExecError::Other(e))))?;
+                    } else if let Some(assoc) = self.state.assoc_arrays.get_mut(&arr_name) {
+                        if assoc.len() >= self.limits.max_array_elements {
+                            return Err(crate::error::LimitKind::ArrayElements.into());
+                        }
+                        assoc.insert(idx_str, value);
                     }
                 } else if assign.append {
                     if self.state.arrays.contains_key(&assign.name) {
