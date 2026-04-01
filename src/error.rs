@@ -147,6 +147,8 @@ pub enum LimitKind {
     SourceDepth,
     InputSize,
     Cancelled,
+    SessionExecCalls,
+    SessionCommands,
 }
 
 impl fmt::Display for LimitKind {
@@ -163,6 +165,8 @@ impl fmt::Display for LimitKind {
             Self::SourceDepth => "maximum source depth",
             Self::InputSize => "maximum input size",
             Self::Cancelled => "execution cancelled",
+            Self::SessionExecCalls => "session exec call limit",
+            Self::SessionCommands => "session command limit",
         };
         write!(f, "{name}")
     }

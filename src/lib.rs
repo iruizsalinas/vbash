@@ -40,13 +40,9 @@ pub use fs::readwrite::ReadWriteFs;
 /// Result of executing a bash command string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecResult {
-    /// Standard output.
     pub stdout: String,
-    /// Standard error.
     pub stderr: String,
-    /// Exit code (0 = success).
     pub exit_code: i32,
-    /// Environment variables after execution.
     pub env: HashMap<String, String>,
 }
 
@@ -149,6 +145,21 @@ impl Default for ExecutionLimits {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionLimits {
+    pub max_total_commands: u64,
+    pub max_exec_calls: u64,
+}
+
+impl Default for SessionLimits {
+    fn default() -> Self {
+        Self {
+            max_total_commands: 100_000,
+            max_exec_calls: 1_000,
+        }
+    }
+}
+
 /// A virtual Bash environment.
 ///
 /// Create one with [`Shell::new`] for defaults or [`Shell::builder`] for
@@ -162,6 +173,9 @@ pub struct Shell {
     registry: commands::CommandRegistry,
     #[cfg(feature = "network")]
     network_policy: Option<NetworkPolicy>,
+    session_limits: Option<SessionLimits>,
+    session_command_count: u64,
+    session_exec_count: u64,
 }
 
 impl Shell {
@@ -187,11 +201,12 @@ impl Shell {
     /// if an execution limit is hit. Note that a non-zero exit code is **not**
     /// an error - it's reported in [`ExecResult::exit_code`].
     pub fn exec(&mut self, command: &str) -> Result<ExecResult, Error> {
+        self.check_session_limits()?;
         if command.len() > self.limits.max_input_size {
             return Err(Error::LimitExceeded(crate::error::LimitKind::InputSize));
         }
         let script = parser::parse(command)?;
-        interpreter::execute(
+        let (result, cmd_count) = interpreter::execute(
             &script,
             &*self.fs,
             &self.default_env,
@@ -202,12 +217,15 @@ impl Shell {
             None,
             #[cfg(feature = "network")]
             self.network_policy.as_ref(),
-        )
+        );
+        self.update_session_counters(cmd_count);
+        result
     }
 
     /// Execute with custom options (stdin, env overrides, cwd override).
     #[allow(clippy::needless_pass_by_value)]
     pub fn exec_with(&mut self, command: &str, options: ExecOptions<'_>) -> Result<ExecResult, Error> {
+        self.check_session_limits()?;
         if command.len() > self.limits.max_input_size {
             return Err(Error::LimitExceeded(crate::error::LimitKind::InputSize));
         }
@@ -222,7 +240,7 @@ impl Shell {
         };
         let cwd = options.cwd.unwrap_or(&self.cwd);
         let stdin = options.stdin.unwrap_or("");
-        interpreter::execute(
+        let (result, cmd_count) = interpreter::execute(
             &script,
             &*self.fs,
             &env,
@@ -233,7 +251,9 @@ impl Shell {
             options.cancel,
             #[cfg(feature = "network")]
             self.network_policy.as_ref(),
-        )
+        );
+        self.update_session_counters(cmd_count);
+        result
     }
 
     /// Register a custom command after construction.
@@ -280,6 +300,23 @@ impl Shell {
     pub fn env(&self) -> &HashMap<String, String> {
         &self.default_env
     }
+
+    fn check_session_limits(&self) -> Result<(), Error> {
+        if let Some(ref sl) = self.session_limits {
+            if self.session_exec_count >= sl.max_exec_calls {
+                return Err(Error::LimitExceeded(crate::error::LimitKind::SessionExecCalls));
+            }
+            if self.session_command_count >= sl.max_total_commands {
+                return Err(Error::LimitExceeded(crate::error::LimitKind::SessionCommands));
+            }
+        }
+        Ok(())
+    }
+
+    fn update_session_counters(&mut self, commands_run: u32) {
+        self.session_exec_count += 1;
+        self.session_command_count += u64::from(commands_run);
+    }
 }
 
 impl Default for Shell {
@@ -307,6 +344,7 @@ pub struct Builder {
     custom_commands: Vec<(String, CommandFn)>,
     #[cfg(feature = "network")]
     network_policy: Option<NetworkPolicy>,
+    session_limits: Option<SessionLimits>,
 }
 
 impl Builder {
@@ -321,6 +359,7 @@ impl Builder {
             custom_commands: Vec::new(),
             #[cfg(feature = "network")]
             network_policy: None,
+            session_limits: None,
         }
     }
 
@@ -365,6 +404,12 @@ impl Builder {
     #[must_use]
     pub fn limits(mut self, limits: ExecutionLimits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    #[must_use]
+    pub fn session_limits(mut self, limits: SessionLimits) -> Self {
+        self.session_limits = Some(limits);
         self
     }
 
@@ -430,6 +475,16 @@ impl Builder {
             .or_insert_with(|| "xterm-256color".to_string());
         env.entry("IFS".to_string())
             .or_insert_with(|| " \t\n".to_string());
+        env.entry("OLDPWD".to_string())
+            .or_insert_with(|| self.cwd.clone());
+        env.entry("OSTYPE".to_string())
+            .or_insert_with(|| "linux-gnu".to_string());
+        env.entry("MACHTYPE".to_string())
+            .or_insert_with(|| "x86_64-pc-linux-gnu".to_string());
+        env.entry("HOSTTYPE".to_string())
+            .or_insert_with(|| "x86_64".to_string());
+        env.entry("BASH_VERSION".to_string())
+            .or_insert_with(|| "5.2.0-vbash".to_string());
 
         let mut registry = commands::CommandRegistry::new();
         for (name, func) in self.custom_commands {
@@ -444,6 +499,9 @@ impl Builder {
             registry,
             #[cfg(feature = "network")]
             network_policy: self.network_policy,
+            session_limits: self.session_limits,
+            session_command_count: 0,
+            session_exec_count: 0,
         }
     }
 }
