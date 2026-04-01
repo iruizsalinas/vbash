@@ -256,9 +256,7 @@ impl VirtualFs for ReadWriteFs {
                 })
             } else {
                 std::fs::remove_dir(&real).map_err(|e| {
-                    if e.kind() == std::io::ErrorKind::Other
-                        || e.to_string().contains("not empty")
-                    {
+                    if e.kind() == std::io::ErrorKind::DirectoryNotEmpty {
                         FsError::IsADirectory(file_path.to_string())
                     } else {
                         FsError::PermissionDenied(file_path.to_string())
