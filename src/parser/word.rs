@@ -48,7 +48,14 @@ pub(super) fn parse_word_string(s: &str) -> Word {
                 let mut inner_lit = String::new();
                 while i < bytes.len() && bytes[i] != b'"' {
                     if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                        inner_lit.push(bytes[i + 1] as char);
+                        let next = bytes[i + 1];
+                        // backslash is only special before $ ` " \ and newline
+                        if matches!(next, b'$' | b'`' | b'"' | b'\\' | b'\n') {
+                            inner_lit.push(next as char);
+                        } else {
+                            inner_lit.push('\\');
+                            inner_lit.push(next as char);
+                        }
                         i += 2;
                     } else if bytes[i] == b'$' {
                         if !inner_lit.is_empty() {
