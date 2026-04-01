@@ -7,10 +7,6 @@ pub mod path;
 pub mod readwrite;
 pub mod types;
 
-pub use memory::InMemoryFs;
-pub use mountable::MountableFs;
-pub use overlay::OverlayFs;
-pub use readwrite::ReadWriteFs;
 pub use types::{DirEntry, FileType, Metadata};
 
 use crate::error::FsError;

@@ -1,5 +1,4 @@
-use vbash::{ExecutionLimits, Shell};
-use vbash::error::{Error, LimitKind};
+use vbash::{Error, ExecutionLimits, LimitKind, Shell};
 
 fn assert_limit(r: Result<vbash::ExecResult, Error>, expected: LimitKind) {
     match r {

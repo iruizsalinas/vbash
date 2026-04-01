@@ -1,5 +1,4 @@
-use vbash::Shell;
-use vbash::error::{Error, ExecError};
+use vbash::{Error, ExecError, Shell};
 
 #[test]
 fn arith_add() {

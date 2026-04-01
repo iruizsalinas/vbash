@@ -17,19 +17,19 @@
 
 #![forbid(unsafe_code)]
 
-pub mod ast;
-pub mod commands;
-pub mod error;
-pub mod fs;
-pub mod interpreter;
-pub mod lexer;
-pub mod parser;
+pub(crate) mod ast;
+pub(crate) mod commands;
+pub(crate) mod error;
+pub(crate) mod fs;
+pub(crate) mod interpreter;
+pub(crate) mod lexer;
+pub(crate) mod parser;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-pub use error::Error;
+pub use error::{Error, ExecError, FsError, LimitKind, ParseError};
 pub use commands::{CommandFn, CommandContext};
 pub use fs::VirtualFs;
 pub use fs::memory::InMemoryFs;

@@ -1,5 +1,4 @@
-use vbash::Shell;
-use vbash::error::Error;
+use vbash::{Error, ExecError, Shell};
 
 #[test]
 fn var_simple() {
@@ -57,7 +56,7 @@ fn var_error_unset() {
     let mut shell = Shell::new();
     let r = shell.exec("set -u; echo $NOPE 2>&1");
     let err = r.unwrap_err();
-    assert!(matches!(err, Error::Exec(vbash::error::ExecError::UnboundVariable(_))));
+    assert!(matches!(err, Error::Exec(ExecError::UnboundVariable(_))));
 }
 
 #[test]
