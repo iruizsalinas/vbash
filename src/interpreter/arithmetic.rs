@@ -135,12 +135,64 @@ impl Interpreter<'_> {
         self.evaluate_arith_string_depth(expr, 0)
     }
 
+    /// Expand nested `$((..))` patterns within an arithmetic expression string,
+    /// replacing each with its evaluated numeric result.
+    fn expand_nested_arith(&mut self, expr: &str, depth: u32) -> Result<String, ShellSignal> {
+        if !expr.contains("$((") {
+            return Ok(expr.to_string());
+        }
+        let mut result = String::with_capacity(expr.len());
+        let bytes = expr.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + 2 < bytes.len()
+                && bytes[i] == b'$'
+                && bytes[i + 1] == b'('
+                && bytes[i + 2] == b'('
+            {
+                let start = i + 3;
+                let mut paren_depth: u32 = 2;
+                let mut j = start;
+                while j < bytes.len() && paren_depth > 0 {
+                    match bytes[j] {
+                        b'(' => paren_depth += 1,
+                        b')' => paren_depth -= 1,
+                        _ => {}
+                    }
+                    if paren_depth > 0 {
+                        j += 1;
+                    }
+                }
+                if paren_depth == 0 && j >= 1 {
+                    // j points at the final ')'; the inner content excludes both closing parens
+                    let inner = &expr[start..j - 1];
+                    let val = self.evaluate_arith_string_depth(inner, depth + 1)?;
+                    result.push_str(&val.to_string());
+                    i = j + 1;
+                } else {
+                    result.push(bytes[i] as char);
+                    i += 1;
+                }
+            } else {
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        Ok(result)
+    }
+
     fn evaluate_arith_string_depth(&mut self, expr: &str, depth: u32) -> Result<i64, ShellSignal> {
         const MAX_ARITH_DEPTH: u32 = 200;
         if depth > MAX_ARITH_DEPTH {
             return Err(ExecError::Other("arithmetic expression recursion limit exceeded".to_string()).into());
         }
         let expr = expr.trim();
+        if expr.is_empty() {
+            return Ok(0);
+        }
+
+        let expanded = self.expand_nested_arith(expr, depth)?;
+        let expr = expanded.trim();
         if expr.is_empty() {
             return Ok(0);
         }
