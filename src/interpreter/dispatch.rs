@@ -118,11 +118,16 @@ impl Interpreter<'_> {
         };
 
         match cmd_fn(&args_refs, &mut ctx) {
-            Ok(result) => Ok(ExecOutput {
-                stdout: result.stdout,
-                stderr: result.stderr,
-                exit_code: result.exit_code,
-            }),
+            Ok(result) => {
+                for (k, v) in &result.env {
+                    let _ = self.state.set_var(k, v.clone());
+                }
+                Ok(ExecOutput {
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    exit_code: result.exit_code,
+                })
+            }
             Err(e) => Err(ShellSignal::Error(e)),
         }
     }
