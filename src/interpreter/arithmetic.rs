@@ -123,9 +123,15 @@ impl Interpreter<'_> {
                 Ok(new_val)
             }
             ArithExpr::Nested(inner) => self.evaluate_arith(inner),
-            ArithExpr::ArrayElement { .. }
-            | ArithExpr::CommandSubst(_)
-            | ArithExpr::ParameterExpansion(_) => Ok(0),
+            ArithExpr::CommandSubst(cmd) => {
+                let output = self.expand_command_subst(cmd)?;
+                Ok(output.trim().parse::<i64>().unwrap_or(0))
+            }
+            ArithExpr::ParameterExpansion(word) => {
+                let output = self.expand_word(word)?;
+                Ok(output.trim().parse::<i64>().unwrap_or(0))
+            }
+            ArithExpr::ArrayElement { .. } => Ok(0),
         }
     }
 
@@ -135,43 +141,61 @@ impl Interpreter<'_> {
         self.evaluate_arith_string_depth(expr, 0)
     }
 
-    /// Expand nested `$((..))` patterns within an arithmetic expression string,
-    /// replacing each with its evaluated numeric result.
-    fn expand_nested_arith(&mut self, expr: &str, depth: u32) -> Result<String, ShellSignal> {
-        if !expr.contains("$((") {
+    fn expand_arith_substitutions(&mut self, expr: &str, depth: u32) -> Result<String, ShellSignal> {
+        if !expr.contains('$') {
             return Ok(expr.to_string());
         }
         let mut result = String::with_capacity(expr.len());
         let bytes = expr.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
-            if i + 2 < bytes.len()
-                && bytes[i] == b'$'
-                && bytes[i + 1] == b'('
-                && bytes[i + 2] == b'('
-            {
-                let start = i + 3;
-                let mut paren_depth: u32 = 2;
-                let mut j = start;
-                while j < bytes.len() && paren_depth > 0 {
-                    match bytes[j] {
-                        b'(' => paren_depth += 1,
-                        b')' => paren_depth -= 1,
-                        _ => {}
+            if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
+                if i + 2 < bytes.len() && bytes[i + 2] == b'(' {
+                    let start = i + 3;
+                    let mut paren_depth: u32 = 2;
+                    let mut j = start;
+                    while j < bytes.len() && paren_depth > 0 {
+                        match bytes[j] {
+                            b'(' => paren_depth += 1,
+                            b')' => paren_depth -= 1,
+                            _ => {}
+                        }
+                        if paren_depth > 0 {
+                            j += 1;
+                        }
                     }
-                    if paren_depth > 0 {
-                        j += 1;
+                    if paren_depth == 0 && j >= 1 {
+                        let inner = &expr[start..j - 1];
+                        let val = self.evaluate_arith_string_depth(inner, depth + 1)?;
+                        result.push_str(&val.to_string());
+                        i = j + 1;
+                    } else {
+                        result.push(bytes[i] as char);
+                        i += 1;
                     }
-                }
-                if paren_depth == 0 && j >= 1 {
-                    // j points at the final ')'; the inner content excludes both closing parens
-                    let inner = &expr[start..j - 1];
-                    let val = self.evaluate_arith_string_depth(inner, depth + 1)?;
-                    result.push_str(&val.to_string());
-                    i = j + 1;
                 } else {
-                    result.push(bytes[i] as char);
-                    i += 1;
+                    let start = i + 2;
+                    let mut paren_depth: u32 = 1;
+                    let mut j = start;
+                    while j < bytes.len() && paren_depth > 0 {
+                        match bytes[j] {
+                            b'(' => paren_depth += 1,
+                            b')' => paren_depth -= 1,
+                            _ => {}
+                        }
+                        if paren_depth > 0 {
+                            j += 1;
+                        }
+                    }
+                    if paren_depth == 0 {
+                        let cmd = &expr[start..j];
+                        let output = self.expand_command_subst(cmd)?;
+                        result.push_str(output.trim());
+                        i = j + 1;
+                    } else {
+                        result.push(bytes[i] as char);
+                        i += 1;
+                    }
                 }
             } else {
                 result.push(bytes[i] as char);
@@ -191,10 +215,15 @@ impl Interpreter<'_> {
             return Ok(0);
         }
 
-        let expanded = self.expand_nested_arith(expr, depth)?;
+        let expanded = self.expand_arith_substitutions(expr, depth)?;
         let expr = expanded.trim();
         if expr.is_empty() {
             return Ok(0);
+        }
+
+        if let Some(pos) = split_at_comma(expr) {
+            self.evaluate_arith_string_depth(&expr[..pos], depth + 1)?;
+            return self.evaluate_arith_string_depth(&expr[pos + 1..], depth + 1);
         }
 
         if let Some((lhs, op, rhs)) = split_arith_assign(expr) {
@@ -525,6 +554,20 @@ pub(super) fn arith_op_gt(a: i64, b: i64) -> i64 { i64::from(a > b) }
 pub(super) fn arith_op_ge(a: i64, b: i64) -> i64 { i64::from(a >= b) }
 fn arith_op_shl(a: i64, b: i64) -> i64 { a.wrapping_shl((b & 63) as u32) }
 fn arith_op_shr(a: i64, b: i64) -> i64 { a.wrapping_shr((b & 63) as u32) }
+
+fn split_at_comma(expr: &str) -> Option<usize> {
+    let bytes = expr.as_bytes();
+    let mut depth = 0i32;
+    for i in (0..bytes.len()).rev() {
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => depth -= 1,
+            b',' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
 
 /// Split `var = expr` or `var += expr` assignments.
 /// Returns `(var_name, op, rhs)` where op is "", "+", "-", "*", "/", or "%".
