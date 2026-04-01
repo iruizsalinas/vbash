@@ -144,9 +144,35 @@ pub fn printf(args: &[&str], _ctx: &mut CommandContext<'_>) -> Result<ExecResult
 });
     }
 
-    let format = args[0];
-    let format_args = &args[1..];
+    let (var_name, fmt_args) = if args.len() >= 3 && args[0] == "-v" {
+        (Some(args[1]), &args[2..])
+    } else {
+        (None, args)
+    };
+
+    if fmt_args.is_empty() {
+        return Ok(ExecResult {
+            stdout: String::new(),
+            stderr: "printf: usage: printf [-v var] format [arguments]\n".to_string(),
+            exit_code: 1,
+            env: HashMap::new(),
+        });
+    }
+
+    let format = fmt_args[0];
+    let format_args = &fmt_args[1..];
     let output = simple_printf(format, format_args);
+
+    if let Some(var) = var_name {
+        let mut env = HashMap::new();
+        env.insert(var.to_string(), output);
+        return Ok(ExecResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            env,
+        });
+    }
 
     Ok(ExecResult {
         stdout: output,
