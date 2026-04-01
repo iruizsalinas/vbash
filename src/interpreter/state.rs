@@ -223,7 +223,7 @@ pub struct ShellOptions {
 }
 
 /// Options controlled by `shopt -s` and `shopt -u`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ShoptOptions {
     /// Extended glob patterns `@(...)`, `*(...)`, `+(...)`, `?(...)`, `!(...)`.
@@ -236,8 +236,6 @@ pub struct ShoptOptions {
     pub failglob: bool,
     /// Globs match hidden files (starting with `.`).
     pub dotglob: bool,
-    /// Skip `.` and `..` in glob results.
-    pub globskipdots: bool,
     /// Case-insensitive globbing.
     pub nocaseglob: bool,
     /// Case-insensitive pattern matching in `case` and `[[`.
@@ -248,19 +246,3 @@ pub struct ShoptOptions {
     pub xpg_echo: bool,
 }
 
-impl Default for ShoptOptions {
-    fn default() -> Self {
-        Self {
-            extglob: false,
-            globstar: false,
-            nullglob: false,
-            failglob: false,
-            dotglob: false,
-            globskipdots: true,
-            nocaseglob: false,
-            nocasematch: false,
-            expand_aliases: false,
-            xpg_echo: false,
-        }
-    }
-}

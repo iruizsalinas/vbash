@@ -1,9 +1,14 @@
 //! Arithmetic expression AST nodes for `$((...))` and `((...))`.
+//!
+//! Most arithmetic is currently evaluated via string parsing in the interpreter.
+//! These AST nodes are used for simple cases (C-style for, `(( ))` commands)
+//! and serve as the foundation for a full AST-based arithmetic parser.
 
 use super::Word;
 
 /// An arithmetic expression.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum ArithExpr {
     /// Integer literal.
     Number(i64),
@@ -55,6 +60,7 @@ pub enum ArithExpr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ArithBinaryOp {
     Add,
     Sub,
@@ -78,6 +84,7 @@ pub enum ArithBinaryOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ArithUnaryOp {
     Negate,
     Plus,
@@ -88,6 +95,7 @@ pub enum ArithUnaryOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ArithAssignOp {
     Assign,
     AddAssign,
