@@ -10,12 +10,12 @@ use super::{glob_match, ExecOutput, InterpResult, Interpreter};
 impl Interpreter<'_> {
     pub(super) fn execute_compound_command(&mut self, cc: &CompoundCommand, stdin: &str) -> InterpResult {
         match cc {
-            CompoundCommand::If(cmd) => self.execute_if(cmd),
-            CompoundCommand::For(cmd) => self.execute_for(cmd),
-            CompoundCommand::CStyleFor(cmd) => self.execute_c_style_for(cmd),
-            CompoundCommand::While(cmd) => self.execute_while(cmd),
-            CompoundCommand::Until(cmd) => self.execute_until(cmd),
-            CompoundCommand::Case(cmd) => self.execute_case(cmd),
+            CompoundCommand::If(cmd) => self.execute_if(cmd, stdin),
+            CompoundCommand::For(cmd) => self.execute_for(cmd, stdin),
+            CompoundCommand::CStyleFor(cmd) => self.execute_c_style_for(cmd, stdin),
+            CompoundCommand::While(cmd) => self.execute_while(cmd, stdin),
+            CompoundCommand::Until(cmd) => self.execute_until(cmd, stdin),
+            CompoundCommand::Case(cmd) => self.execute_case(cmd, stdin),
             CompoundCommand::Subshell(cmd) => self.execute_subshell(cmd),
             CompoundCommand::Group(cmd) => self.execute_group(cmd, stdin),
             CompoundCommand::Arithmetic(cmd) => self.execute_arithmetic_cmd(cmd),
@@ -74,7 +74,14 @@ impl Interpreter<'_> {
         Ok(out)
     }
 
-    fn execute_if(&mut self, cmd: &IfCmd) -> InterpResult {
+    fn execute_if(&mut self, cmd: &IfCmd, stdin: &str) -> InterpResult {
+        let saved_stdin = std::mem::replace(&mut self.stdin, stdin.to_string());
+        let result = self.execute_if_inner(cmd);
+        self.stdin = saved_stdin;
+        result
+    }
+
+    fn execute_if_inner(&mut self, cmd: &IfCmd) -> InterpResult {
         self.state.in_condition = true;
         for clause in &cmd.clauses {
             let cond = self.execute_statements(&clause.condition)?;
@@ -102,7 +109,14 @@ impl Interpreter<'_> {
         )
     }
 
-    fn execute_for(&mut self, cmd: &ForCmd) -> InterpResult {
+    fn execute_for(&mut self, cmd: &ForCmd, stdin: &str) -> InterpResult {
+        let saved_stdin = std::mem::replace(&mut self.stdin, stdin.to_string());
+        let result = self.execute_for_inner(cmd);
+        self.stdin = saved_stdin;
+        result
+    }
+
+    fn execute_for_inner(&mut self, cmd: &ForCmd) -> InterpResult {
         let words = if let Some(ref word_list) = cmd.words {
             let mut expanded = Vec::new();
             for w in word_list {
@@ -165,7 +179,14 @@ impl Interpreter<'_> {
         )
     }
 
-    fn execute_c_style_for(&mut self, cmd: &CStyleForCmd) -> InterpResult {
+    fn execute_c_style_for(&mut self, cmd: &CStyleForCmd, stdin: &str) -> InterpResult {
+        let saved_stdin = std::mem::replace(&mut self.stdin, stdin.to_string());
+        let result = self.execute_c_style_for_inner(cmd);
+        self.stdin = saved_stdin;
+        result
+    }
+
+    fn execute_c_style_for_inner(&mut self, cmd: &CStyleForCmd) -> InterpResult {
         if let Some(ref init) = cmd.init {
             self.evaluate_arith(init)?;
         }
@@ -231,14 +252,19 @@ impl Interpreter<'_> {
         )
     }
 
-    fn execute_while(&mut self, cmd: &WhileCmd) -> InterpResult {
+    fn execute_while(&mut self, cmd: &WhileCmd, stdin: &str) -> InterpResult {
         let mut stdout = String::new();
         let mut stderr = String::new();
         let mut exit_code = 0;
         let mut iteration = 0u32;
 
         // Handle input redirection on the while loop (e.g., while read line; do ... done < file)
-        let input_lines = self.extract_input_redirect(&cmd.redirections);
+        // Pipeline stdin is also treated as line-based input so `read` can consume it.
+        let input_lines = self.extract_input_redirect(&cmd.redirections)
+            .or_else(|| {
+                if stdin.is_empty() { None }
+                else { Some(stdin.lines().map(String::from).collect()) }
+            });
         let mut input_cursor = 0usize;
         let saved_stdin = if input_lines.is_some() {
             Some(std::mem::take(&mut self.stdin))
@@ -329,7 +355,14 @@ impl Interpreter<'_> {
         None
     }
 
-    fn execute_until(&mut self, cmd: &UntilCmd) -> InterpResult {
+    fn execute_until(&mut self, cmd: &UntilCmd, stdin: &str) -> InterpResult {
+        let saved_stdin = std::mem::replace(&mut self.stdin, stdin.to_string());
+        let result = self.execute_until_inner(cmd);
+        self.stdin = saved_stdin;
+        result
+    }
+
+    fn execute_until_inner(&mut self, cmd: &UntilCmd) -> InterpResult {
         let mut stdout = String::new();
         let mut stderr = String::new();
         let mut exit_code = 0;
@@ -387,7 +420,14 @@ impl Interpreter<'_> {
         )
     }
 
-    fn execute_case(&mut self, cmd: &CaseCmd) -> InterpResult {
+    fn execute_case(&mut self, cmd: &CaseCmd, stdin: &str) -> InterpResult {
+        let saved_stdin = std::mem::replace(&mut self.stdin, stdin.to_string());
+        let result = self.execute_case_inner(cmd);
+        self.stdin = saved_stdin;
+        result
+    }
+
+    fn execute_case_inner(&mut self, cmd: &CaseCmd) -> InterpResult {
         let word_val = self.expand_word(&cmd.word)?;
         let extglob = self.state.shopt.extglob;
         let nocasematch = self.state.shopt.nocasematch;
