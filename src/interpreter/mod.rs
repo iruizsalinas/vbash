@@ -48,7 +48,7 @@ pub(crate) fn execute(
     stdin: &str,
     cancel: Option<Arc<AtomicBool>>,
     #[cfg(feature = "network")] network_policy: Option<&crate::NetworkPolicy>,
-) -> Result<ExecResult, Error> {
+) -> (Result<ExecResult, Error>, u32) {
     let mut state = ShellState::new(cwd.to_string());
     for (k, v) in env {
         let _ = state.set_var(k, v.clone());
@@ -96,13 +96,16 @@ pub(crate) fn execute(
                     r.stdout.push_str(&trap_out.stdout);
                     r.stderr.push_str(&trap_out.stderr);
                 }
-                return Ok(r);
+                let count = interp.state.command_count;
+                return (Ok(r), count);
             }
-            return result;
+            let count = interp.state.command_count;
+            return (result, count);
         }
     }
 
-    result
+    let count = interp.state.command_count;
+    (result, count)
 }
 
 pub(super) struct Interpreter<'a> {
@@ -347,6 +350,12 @@ impl Interpreter<'_> {
                             .map_err(|e| ShellSignal::Error(Error::Exec(ExecError::Other(e))))?;
                     }
                 } else {
+                    let resolved = self.state.resolve_nameref(&assign.name).to_string();
+                    let value = if self.state.integers.contains(&resolved) {
+                        self.evaluate_arith_string(&value).unwrap_or(0).to_string()
+                    } else {
+                        value
+                    };
                     self.state.set_var(&assign.name, value)
                         .map_err(|e| ShellSignal::Error(Error::Exec(ExecError::Other(e))))?;
                 }

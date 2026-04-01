@@ -207,7 +207,9 @@ impl Interpreter<'_> {
 
         for var_arg in &var_args {
             if let Some((name, value)) = var_arg.split_once('=') {
-                if flags.contains(&'a') {
+                if flags.contains(&'n') {
+                    self.state.namerefs.insert(name.to_string(), value.to_string());
+                } else if flags.contains(&'a') {
                     let elements: Vec<String> = if value.starts_with('(') && value.ends_with(')') {
                         value[1..value.len() - 1]
                             .split_whitespace()
@@ -219,6 +221,10 @@ impl Interpreter<'_> {
                     self.state.arrays.insert(name.to_string(), elements);
                 } else if flags.contains(&'A') {
                     self.state.assoc_arrays.entry(name.to_string()).or_default();
+                } else if flags.contains(&'i') {
+                    self.state.integers.insert(name.to_string());
+                    let val = self.evaluate_arith_string(value).unwrap_or(0);
+                    let _ = self.state.set_var(name, val.to_string());
                 } else {
                     let _ = self.state.set_var(name, value.to_string());
                 }
@@ -229,10 +235,14 @@ impl Interpreter<'_> {
                     self.state.exported.insert(name.to_string());
                 }
             } else {
-                if flags.contains(&'a') {
+                if flags.contains(&'n') {
+                    // no value yet, will resolve on first use
+                } else if flags.contains(&'a') {
                     self.state.arrays.entry((*var_arg).to_string()).or_default();
                 } else if flags.contains(&'A') {
                     self.state.assoc_arrays.entry((*var_arg).to_string()).or_default();
+                } else if flags.contains(&'i') {
+                    self.state.integers.insert((*var_arg).to_string());
                 }
                 if flags.contains(&'x') {
                     self.state.exported.insert((*var_arg).to_string());

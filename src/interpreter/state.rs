@@ -73,8 +73,12 @@ pub(crate) struct ShellState {
     pub source_depth: u32,
     pub subshell_depth: u32,
     pub func_name_stack: Vec<String>,
+    pub source_file_stack: Vec<String>,
     pub random_seed: u32,
     pub source_file: String,
+
+    pub namerefs: HashMap<String, String>,
+    pub integers: HashSet<String>,
 }
 
 impl ShellState {
@@ -108,19 +112,32 @@ impl ShellState {
             source_depth: 0,
             subshell_depth: 0,
             func_name_stack: Vec::new(),
+            source_file_stack: Vec::new(),
             random_seed: 1,
             source_file: String::new(),
+            namerefs: HashMap::new(),
+            integers: HashSet::new(),
         }
+    }
+
+    pub fn resolve_nameref<'a>(&'a self, name: &'a str) -> &'a str {
+        let mut current = name;
+        for _ in 0..10 {
+            if let Some(target) = self.namerefs.get(current) {
+                if target == name { break; }
+                current = target.as_str();
+            } else {
+                break;
+            }
+        }
+        current
     }
 
     /// Look up a variable, searching local scopes first (dynamic scoping).
     pub fn get_var(&self, name: &str) -> Option<&str> {
+        let name = self.resolve_nameref(name);
         for scope in self.local_scopes.iter().rev() {
             if scope.get(name).is_some() {
-                // The variable exists in this scope - but it might be
-                // shadowed by the env value (locals modify env directly).
-                // If it's in the scope map at all, it was declared local here,
-                // so the current env value is the local value.
                 return self.env.get(name).map(String::as_str);
             }
         }
@@ -129,10 +146,11 @@ impl ShellState {
 
     /// Set a variable, respecting readonly.
     pub fn set_var(&mut self, name: &str, value: String) -> Result<(), String> {
-        if self.readonly.contains(name) {
-            return Err(format!("{name}: readonly variable"));
+        let resolved = self.resolve_nameref(name).to_string();
+        if self.readonly.contains(&resolved) {
+            return Err(format!("{resolved}: readonly variable"));
         }
-        self.env.insert(name.to_string(), value);
+        self.env.insert(resolved, value);
         Ok(())
     }
 
