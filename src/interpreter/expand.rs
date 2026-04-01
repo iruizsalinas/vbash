@@ -330,6 +330,30 @@ impl Interpreter<'_> {
             }
         }
 
+        if param.name == "FUNCNAME" || param.name == "BASH_SOURCE" {
+            if param.subscript.is_none() {
+                let stack = if param.name == "FUNCNAME" {
+                    &self.state.func_name_stack
+                } else {
+                    &self.state.source_file_stack
+                };
+                return Ok(stack.last().cloned().unwrap_or_default());
+            }
+            let stack: Vec<String> = if param.name == "FUNCNAME" {
+                self.state.func_name_stack.iter().rev().cloned().collect()
+            } else {
+                self.state.source_file_stack.iter().rev().cloned().collect()
+            };
+            let sub_str = self.expand_word(param.subscript.as_ref().unwrap())?;
+            if sub_str == "@" || sub_str == "*" {
+                return Ok(stack.join(" "));
+            }
+            if let Ok(idx) = sub_str.parse::<usize>() {
+                return Ok(stack.get(idx).cloned().unwrap_or_default());
+            }
+            return Ok(stack.first().cloned().unwrap_or_default());
+        }
+
         if let Some(ref sub) = param.subscript {
             let sub_str = self.expand_word(sub)?;
             let arr_value = if sub_str == "@" || sub_str == "*" {
@@ -513,7 +537,47 @@ impl Interpreter<'_> {
                 names.sort_unstable();
                 Ok(names.join(" "))
             }
-            _ => Ok(value.to_string()),
+            ParamOp::Transform(op) => {
+                use crate::ast::word::TransformOp;
+                match op {
+                    TransformOp::Quote => {
+                        if value.is_empty() {
+                            Ok("''".to_string())
+                        } else if value.contains('\'') {
+                            Ok(format!("$'{}'", value.replace('\\', "\\\\").replace('\'', "\\'")))
+                        } else {
+                            Ok(format!("'{value}'"))
+                        }
+                    }
+                    TransformOp::Escape => Ok(expand_ansi_c(value)),
+                    TransformOp::Assignment => {
+                        Ok(format!("{name}='{}'", value.replace('\'', "'\\''")))
+                    }
+                    TransformOp::Attributes => {
+                        let mut attrs = String::new();
+                        if self.state.readonly.contains(name) { attrs.push('r'); }
+                        if self.state.exported.contains(name) { attrs.push('x'); }
+                        if self.state.arrays.contains_key(name) { attrs.push('a'); }
+                        if self.state.assoc_arrays.contains_key(name) { attrs.push('A'); }
+                        if self.state.namerefs.contains_key(name) { attrs.push('n'); }
+                        if self.state.integers.contains(name) { attrs.push('i'); }
+                        Ok(attrs)
+                    }
+                    TransformOp::UpperFirst => {
+                        let mut chars = value.chars();
+                        Ok(match chars.next() {
+                            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                            None => String::new(),
+                        })
+                    }
+                    TransformOp::UpperAll => Ok(value.to_uppercase()),
+                    TransformOp::LowerAll => Ok(value.to_lowercase()),
+                    TransformOp::Prompt | TransformOp::KeyValue | TransformOp::KeyValueUnquoted => {
+                        Ok(value.to_string())
+                    }
+                }
+            }
+            ParamOp::ArrayKeys { .. } => Ok(value.to_string()),
         }
     }
 

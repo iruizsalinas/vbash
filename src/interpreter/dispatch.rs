@@ -140,6 +140,7 @@ impl Interpreter<'_> {
         }
 
         self.state.func_name_stack.push(func.name.clone());
+        self.state.source_file_stack.push(self.state.source_file.clone());
 
         let saved_params = std::mem::replace(
             &mut self.state.positional_params,
@@ -162,6 +163,7 @@ impl Interpreter<'_> {
 
         self.state.positional_params = saved_params;
         self.state.func_name_stack.pop();
+        self.state.source_file_stack.pop();
         self.state.call_depth -= 1;
 
         match result {
