@@ -28,49 +28,96 @@ impl Interpreter<'_> {
         result: InterpResult,
         redirections: &[Redirection],
     ) -> InterpResult {
+        #[derive(Clone)]
+        enum Dest {
+            Stdout,
+            Stderr,
+            File(String, bool),
+        }
+
         if redirections.is_empty() {
             return result;
         }
         let mut out = result?;
+        let mut fd1_dest = Dest::Stdout;
+        let mut fd2_dest = Dest::Stderr;
+
         for redir in redirections {
             if let RedirectTarget::Word(w) = &redir.target {
                 let target = self.expand_word(w)?;
                 let resolved = self.resolve_path(&target);
+                let fd = redir.fd.unwrap_or(1);
                 match redir.operator {
                     RedirectOp::Output | RedirectOp::Clobber => {
-                        let effective_fd = redir.fd.unwrap_or(1);
-                        let content = if effective_fd == 2 {
-                            std::mem::take(&mut out.stderr)
+                        if fd == 2 {
+                            fd2_dest = Dest::File(resolved, false);
                         } else {
-                            std::mem::take(&mut out.stdout)
-                        };
-                        let parent = crate::fs::path::parent(&resolved);
-                        if parent != "/" {
-                            let _ = self.fs.mkdir(parent, true);
+                            fd1_dest = Dest::File(resolved, false);
                         }
-                        self.fs
-                            .write_file(&resolved, content.as_bytes())
-                            .map_err(|e| ShellSignal::Error(Error::Fs(e)))?;
                     }
                     RedirectOp::Append => {
-                        let effective_fd = redir.fd.unwrap_or(1);
-                        let content = if effective_fd == 2 {
-                            std::mem::take(&mut out.stderr)
+                        if fd == 2 {
+                            fd2_dest = Dest::File(resolved, true);
                         } else {
-                            std::mem::take(&mut out.stdout)
-                        };
-                        let parent = crate::fs::path::parent(&resolved);
-                        if parent != "/" {
-                            let _ = self.fs.mkdir(parent, true);
+                            fd1_dest = Dest::File(resolved, true);
                         }
-                        self.fs
-                            .append_file(&resolved, content.as_bytes())
-                            .map_err(|e| ShellSignal::Error(Error::Fs(e)))?;
+                    }
+                    RedirectOp::DupOutput => {
+                        if fd == 2 && target == "1" {
+                            fd2_dest = fd1_dest.clone();
+                        } else if fd == 1 && target == "2" {
+                            fd1_dest = fd2_dest.clone();
+                        }
+                    }
+                    RedirectOp::OutputAll => {
+                        fd1_dest = Dest::File(resolved.clone(), false);
+                        fd2_dest = Dest::File(resolved, false);
+                    }
+                    RedirectOp::AppendAll => {
+                        fd1_dest = Dest::File(resolved.clone(), true);
+                        fd2_dest = Dest::File(resolved, true);
                     }
                     _ => {}
                 }
             }
         }
+
+        let stdout_content = std::mem::take(&mut out.stdout);
+        let stderr_content = std::mem::take(&mut out.stderr);
+
+        let mut file_writes: Vec<(String, String, bool)> = Vec::new(); // (path, content, append)
+
+        match fd1_dest {
+            Dest::Stdout => out.stdout = stdout_content,
+            Dest::Stderr => out.stderr.push_str(&stdout_content),
+            Dest::File(ref path, append) => file_writes.push((path.clone(), stdout_content, append)),
+        }
+        match fd2_dest {
+            Dest::Stderr => out.stderr.push_str(&stderr_content),
+            Dest::Stdout => out.stdout.push_str(&stderr_content),
+            Dest::File(ref path, append) => {
+                if let Some(entry) = file_writes.iter_mut().find(|(p, _, _)| p == path) {
+                    entry.1.push_str(&stderr_content);
+                } else {
+                    file_writes.push((path.clone(), stderr_content, append));
+                }
+            }
+        }
+
+        for (path, content, append) in &file_writes {
+            let parent = crate::fs::path::parent(path);
+            if parent != "/" {
+                let _ = self.fs.mkdir(parent, true);
+            }
+            if *append {
+                self.fs.append_file(path, content.as_bytes())
+                    .map_err(|e| ShellSignal::Error(Error::Fs(e)))?;
+            } else {
+                self.fs.write_file(path, content.as_bytes())
+                    .map_err(|e| ShellSignal::Error(Error::Fs(e)))?;
+            }
+        }
+
         Ok(out)
     }
 
