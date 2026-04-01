@@ -539,6 +539,13 @@ pub fn head(args: &[&str], ctx: &mut CommandContext<'_>) -> Result<ExecResult, E
                 n = arg[2..].parse().unwrap_or(10);
                 i += 1;
             }
+            arg if arg.len() > 1
+                && arg.starts_with('-')
+                && arg.as_bytes()[1].is_ascii_digit() =>
+            {
+                n = arg[1..].parse().unwrap_or(10);
+                i += 1;
+            }
             _ => {
                 file_args.push(args[i]);
                 i += 1;
@@ -577,6 +584,23 @@ pub fn tail(args: &[&str], ctx: &mut CommandContext<'_>) -> Result<ExecResult, E
                     n = val.parse().unwrap_or(10);
                 }
                 i += 2;
+            }
+            arg if arg.starts_with("-n") => {
+                let val = &arg[2..];
+                if let Some(v) = val.strip_prefix('+') {
+                    from_start = true;
+                    n = v.parse().unwrap_or(1);
+                } else {
+                    n = val.parse().unwrap_or(10);
+                }
+                i += 1;
+            }
+            arg if arg.len() > 1
+                && arg.starts_with('-')
+                && arg.as_bytes()[1].is_ascii_digit() =>
+            {
+                n = arg[1..].parse().unwrap_or(10);
+                i += 1;
             }
             _ => {
                 file_args.push(args[i]);
