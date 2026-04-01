@@ -262,6 +262,9 @@ impl Interpreter<'_> {
             last_exit_code
         };
 
+        let codes: Vec<String> = pipe_exit_codes.iter().map(ToString::to_string).collect();
+        self.state.set_array("PIPESTATUS", codes);
+
         let exit_code = if pipeline.negated {
             i32::from(exit_code == 0)
         } else {

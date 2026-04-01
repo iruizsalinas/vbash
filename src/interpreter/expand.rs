@@ -90,6 +90,10 @@ impl Interpreter<'_> {
             return Ok(self.state.positional_params.clone());
         }
 
+        if let Some(elements) = self.try_expand_quoted_array_at(word)? {
+            return Ok(elements);
+        }
+
         if word_has_brace_expansion(word) {
             return self.expand_word_to_fields(word);
         }
@@ -132,6 +136,55 @@ impl Interpreter<'_> {
             }
         }
         Ok(result)
+    }
+
+    fn slice_array(&mut self, arr: Vec<String>, offset: &Word, length: Option<&Word>) -> Result<Vec<String>, ShellSignal> {
+        let off: i64 = self.expand_word(offset)?.trim().parse().unwrap_or(0);
+        let start = if off < 0 {
+            arr.len().saturating_sub(off.unsigned_abs() as usize)
+        } else {
+            (off as usize).min(arr.len())
+        };
+        if let Some(len_word) = length {
+            let len: usize = self.expand_word(len_word)?.trim().parse().unwrap_or(0);
+            Ok(arr.into_iter().skip(start).take(len).collect())
+        } else {
+            Ok(arr.into_iter().skip(start).collect())
+        }
+    }
+
+    // "${arr[@]}" produces one field per element even inside double quotes.
+    fn try_expand_quoted_array_at(&mut self, word: &Word) -> Result<Option<Vec<String>>, ShellSignal> {
+        if word.parts.len() != 1 {
+            return Ok(None);
+        }
+        let WordPart::DoubleQuoted(inner) = &word.parts[0] else {
+            return Ok(None);
+        };
+        if inner.len() != 1 {
+            return Ok(None);
+        }
+        let WordPart::Parameter(p) = &inner[0] else {
+            return Ok(None);
+        };
+        let Some(ref sub) = p.subscript else {
+            return Ok(None);
+        };
+        let sub_str = self.expand_word(sub)?;
+        if sub_str != "@" {
+            return Ok(None);
+        }
+        if let Some(ParamOp::Substring { offset, length }) = &p.operation {
+            let arr = self.state.get_array(&p.name).cloned().unwrap_or_default();
+            return Ok(Some(self.slice_array(arr, offset, length.as_ref())?));
+        }
+        if let Some(assoc) = self.state.assoc_arrays.get(&p.name) {
+            return Ok(Some(assoc.values().cloned().collect()));
+        }
+        let elements = self.state.get_array(&p.name)
+            .cloned()
+            .unwrap_or_default();
+        Ok(Some(elements))
     }
 
     fn expand_word_to_fields(&mut self, word: &Word) -> Result<Vec<String>, ShellSignal> {
@@ -280,6 +333,14 @@ impl Interpreter<'_> {
         if let Some(ref sub) = param.subscript {
             let sub_str = self.expand_word(sub)?;
             let arr_value = if sub_str == "@" || sub_str == "*" {
+                if let Some(ParamOp::Substring { ref offset, ref length }) = param.operation {
+                    let arr = if let Some(assoc) = self.state.assoc_arrays.get(&param.name) {
+                        assoc.values().cloned().collect::<Vec<_>>()
+                    } else {
+                        self.state.get_array(&param.name).cloned().unwrap_or_default()
+                    };
+                    return Ok(self.slice_array(arr, offset, length.as_ref())?.join(" "));
+                }
                 if let Some(assoc) = self.state.assoc_arrays.get(&param.name) {
                     Some(assoc.values().cloned().collect::<Vec<_>>().join(" "))
                 } else {
@@ -442,6 +503,15 @@ impl Interpreter<'_> {
             ParamOp::Indirection => {
                 let indirect_name = value;
                 Ok(self.state.get_var(indirect_name).unwrap_or("").to_string())
+            }
+            ParamOp::VarNamePrefix { .. } => {
+                let prefix = name;
+                let mut names: Vec<&str> = self.state.env.keys()
+                    .map(String::as_str)
+                    .filter(|k| k.starts_with(prefix))
+                    .collect();
+                names.sort_unstable();
+                Ok(names.join(" "))
             }
             _ => Ok(value.to_string()),
         }
