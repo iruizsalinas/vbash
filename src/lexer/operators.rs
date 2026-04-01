@@ -172,13 +172,15 @@ impl Lexer<'_> {
             }
         }
 
-        // Pure digit token followed by `<` or `>` is an I/O number, not a word
-        if value.bytes().all(|b| b.is_ascii_digit()) && !value.is_empty() {
-            if let Some(next) = self.peek_after_spaces() {
-                if is_redirect_start(next) {
-                    return TokenKind::IoNumber(value);
-                }
-            }
+        // Pure digit token immediately followed by `<` or `>` is an I/O number.
+        // The digit must be directly adjacent (no space): `2>` is fd redirect,
+        // but `2 >` is the word "2" followed by a redirect of stdout.
+        if value.bytes().all(|b| b.is_ascii_digit())
+            && !value.is_empty()
+            && self.pos < self.input.len()
+            && is_redirect_start(self.input[self.pos])
+        {
+            return TokenKind::IoNumber(value);
         }
 
         TokenKind::Word(value)

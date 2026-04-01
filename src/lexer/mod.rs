@@ -144,18 +144,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub(super) fn peek_after_spaces(&self) -> Option<u8> {
-        let mut i = self.pos;
-        while i < self.input.len() && (self.input[i] == b' ' || self.input[i] == b'\t') {
-            i += 1;
-        }
-        if i < self.input.len() {
-            Some(self.input[i])
-        } else {
-            None
-        }
-    }
-
     pub(super) fn advance(&mut self) {
         if self.pos < self.input.len() {
             if self.input[self.pos] == b'\n' {
