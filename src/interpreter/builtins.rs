@@ -45,9 +45,39 @@ impl Interpreter<'_> {
     pub(super) fn builtin_unset(&mut self, args: &[&str]) -> ExecOutput {
         let mut stderr = String::new();
         let mut exit_code = 0;
+        let mut unset_func = false;
         for arg in args {
-            if *arg == "-f" || *arg == "-v" {
+            if *arg == "-f" {
+                unset_func = true;
                 continue;
+            }
+            if *arg == "-v" {
+                unset_func = false;
+                continue;
+            }
+            if unset_func {
+                self.state.functions.remove(*arg);
+                continue;
+            }
+            if let Some(bracket) = arg.find('[') {
+                if arg.ends_with(']') {
+                    let arr_name = &arg[..bracket];
+                    let idx_str = &arg[bracket + 1..arg.len() - 1];
+                    if idx_str == "@" || idx_str == "*" {
+                        self.state.arrays.remove(arr_name);
+                        self.state.assoc_arrays.remove(arr_name);
+                    } else if let Ok(idx) = idx_str.parse::<usize>() {
+                        // bash leaves a gap rather than shifting indices
+                        if let Some(arr) = self.state.arrays.get_mut(arr_name) {
+                            if idx < arr.len() {
+                                arr[idx] = String::new();
+                            }
+                        }
+                    } else if let Some(assoc) = self.state.assoc_arrays.get_mut(arr_name) {
+                        assoc.remove(idx_str);
+                    }
+                    continue;
+                }
             }
             if let Err(e) = self.state.unset_var(arg) {
                 let _ = writeln!(stderr, "unset: {e}");
