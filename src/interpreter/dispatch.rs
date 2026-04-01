@@ -127,7 +127,7 @@ impl Interpreter<'_> {
         }
     }
 
-    pub(super) fn call_function(&mut self, func: &FunctionDef, args: &[String], _stdin: &str) -> InterpResult {
+    pub(super) fn call_function(&mut self, func: &FunctionDef, args: &[String], stdin: &str) -> InterpResult {
         self.state.call_depth += 1;
         if self.state.call_depth > self.limits.max_call_depth {
             self.state.call_depth -= 1;
@@ -143,7 +143,7 @@ impl Interpreter<'_> {
 
         self.state.local_scopes.push(HashMap::new());
 
-        let result = self.execute_compound_command(&func.body, "");
+        let result = self.execute_compound_command(&func.body, stdin);
 
         if let Some(scope) = self.state.local_scopes.pop() {
             for (name, old_value) in scope {

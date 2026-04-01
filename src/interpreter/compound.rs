@@ -456,8 +456,10 @@ impl Interpreter<'_> {
         self.apply_compound_redirections(inner, &cmd.redirections)
     }
 
-    fn execute_group(&mut self, cmd: &GroupCmd, _stdin: &str) -> InterpResult {
+    fn execute_group(&mut self, cmd: &GroupCmd, stdin: &str) -> InterpResult {
+        let saved = std::mem::replace(&mut self.stdin, stdin.to_string());
         let result = self.execute_statements(&cmd.body);
+        self.stdin = saved;
         self.apply_compound_redirections(result, &cmd.redirections)
     }
 
