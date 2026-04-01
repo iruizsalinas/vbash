@@ -25,6 +25,7 @@ pub fn grep_cmd(args: &[&str], ctx: &mut CommandContext<'_>) -> Result<ExecResul
     let mut fixed_strings = false;
     let mut include_globs: Vec<String> = Vec::new();
     let mut exclude_globs: Vec<String> = Vec::new();
+    let mut exclude_dir_globs: Vec<String> = Vec::new();
     let mut pattern_str = None;
     let mut file_args = Vec::new();
 
@@ -78,6 +79,11 @@ pub fn grep_cmd(args: &[&str], ctx: &mut CommandContext<'_>) -> Result<ExecResul
             arg if arg.starts_with("--exclude=") => {
                 if let Some(g) = arg.strip_prefix("--exclude=") {
                     exclude_globs.push(g.to_string());
+                }
+            }
+            arg if arg.starts_with("--exclude-dir=") => {
+                if let Some(g) = arg.strip_prefix("--exclude-dir=") {
+                    exclude_dir_globs.push(g.to_string());
                 }
             }
             arg if arg.starts_with("-m") => {
@@ -166,7 +172,7 @@ pub fn grep_cmd(args: &[&str], ctx: &mut CommandContext<'_>) -> Result<ExecResul
                 ctx, &resolved, &matcher, invert, count_only, line_numbers, only_matching,
                 quiet, max_count, before_context, after_context,
                 files_with_matches, files_without_match, show_filename,
-                &include_globs, &exclude_globs, &mut stdout, &mut total_match_count,
+                &include_globs, &exclude_globs, &exclude_dir_globs, &mut stdout, &mut total_match_count,
             );
         }
     } else {
@@ -449,6 +455,7 @@ fn grep_walk_recursive(
     show_filename: bool,
     include_globs: &[String],
     exclude_globs: &[String],
+    exclude_dir_globs: &[String],
     stdout: &mut String,
     total: &mut u64,
 ) {
@@ -471,6 +478,10 @@ fn grep_walk_recursive(
             stdout,
         );
     } else if meta.is_dir() {
+        let dir_name = crate::fs::path::basename(path);
+        if !exclude_dir_globs.is_empty() && grep_filename_matches_glob(dir_name, exclude_dir_globs) {
+            return;
+        }
         if let Ok(entries) = ctx.fs.readdir(path) {
             let mut entries = entries;
             entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -484,7 +495,7 @@ fn grep_walk_recursive(
                     ctx, &child, matcher, invert, count_only, line_numbers, only_matching,
                     quiet, max_count, before_context, after_context,
                     files_with_matches, files_without_match, show_filename,
-                    include_globs, exclude_globs, stdout, total,
+                    include_globs, exclude_globs, exclude_dir_globs, stdout, total,
                 );
             }
         }
