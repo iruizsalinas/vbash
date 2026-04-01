@@ -262,27 +262,27 @@ fn send_one_request(
 
     let send_with_body = has_body(method) || body_data.is_some();
 
+    let mut builder = ureq::http::Request::builder()
+        .method(method)
+        .uri(url)
+        .header("User-Agent", ua);
+
+    for (key, value) in &opts.headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    if let Some(ref referer) = opts.referer {
+        builder = builder.header("Referer", referer.as_str());
+    }
+    if let Some(ref cookie) = opts.cookie {
+        builder = builder.header("Cookie", cookie.as_str());
+    }
+    if let Some(ref user) = opts.user {
+        let encoded = base64_encode(user.as_bytes());
+        let auth_val = format!("Basic {encoded}");
+        builder = builder.header("Authorization", auth_val);
+    }
+
     let send_result = if send_with_body {
-        let mut builder = ureq::http::Request::builder()
-            .method(method)
-            .uri(url)
-            .header("User-Agent", ua);
-
-        for (key, value) in &opts.headers {
-            builder = builder.header(key.as_str(), value.as_str());
-        }
-        if let Some(ref referer) = opts.referer {
-            builder = builder.header("Referer", referer.as_str());
-        }
-        if let Some(ref cookie) = opts.cookie {
-            builder = builder.header("Cookie", cookie.as_str());
-        }
-        if let Some(ref user) = opts.user {
-            let encoded = base64_encode(user.as_bytes());
-            let auth_val = format!("Basic {encoded}");
-            builder = builder.header("Authorization", auth_val);
-        }
-
         if let Some((data, ct)) = body_data {
             if let Some(ct_val) = ct {
                 builder = builder.header("Content-Type", ct_val.as_str());
@@ -298,25 +298,6 @@ fn send_one_request(
             agent.run(request)
         }
     } else {
-        let mut builder = ureq::http::Request::builder()
-            .method(method)
-            .uri(url)
-            .header("User-Agent", ua);
-
-        for (key, value) in &opts.headers {
-            builder = builder.header(key.as_str(), value.as_str());
-        }
-        if let Some(ref referer) = opts.referer {
-            builder = builder.header("Referer", referer.as_str());
-        }
-        if let Some(ref cookie) = opts.cookie {
-            builder = builder.header("Cookie", cookie.as_str());
-        }
-        if let Some(ref user) = opts.user {
-            let encoded = base64_encode(user.as_bytes());
-            let auth_val = format!("Basic {encoded}");
-            builder = builder.header("Authorization", auth_val);
-        }
         let request = builder
             .body(())
             .map_err(|e| (format!("curl: {e}"), 3))?;
