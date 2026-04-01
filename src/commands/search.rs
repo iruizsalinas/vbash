@@ -103,124 +103,218 @@ fn match_bracket(pattern: &[char], ch: char) -> Option<(bool, usize)> {
     }
 }
 
-struct FindOpts<'a> {
-    name_pattern: Option<&'a str>,
-    iname_pattern: Option<&'a str>,
-    path_pattern: Option<&'a str>,
-    type_filter: Option<char>,
-    empty: bool,
+enum FindExpr {
+    Name(String, bool),
+    Path(String),
+    Type(char),
+    Empty,
+    Size(String),
+    Mtime(String),
+    Newer(String),
+    Exec(Vec<String>),
+    Print,
+    Print0,
+    Delete,
+    Not(Box<FindExpr>),
+    And(Box<FindExpr>, Box<FindExpr>),
+    Or(Box<FindExpr>, Box<FindExpr>),
+    True,
+}
+
+struct FindGlobals {
     maxdepth: Option<usize>,
     mindepth: Option<usize>,
-    print0: bool,
-    delete: bool,
-    size_spec: Option<String>,
-    mtime_spec: Option<String>,
-    newer_file: Option<String>,
-    exec_cmd: Vec<String>,
+    has_print_action: bool,
+    newer_mtime: Option<std::time::SystemTime>,
+}
+
+fn parse_find_expr(args: &[&str], pos: &mut usize, cwd: &str) -> FindExpr {
+    parse_or(args, pos, cwd)
+}
+
+fn parse_or(args: &[&str], pos: &mut usize, cwd: &str) -> FindExpr {
+    let mut left = parse_and(args, pos, cwd);
+    while *pos < args.len() && (args[*pos] == "-o" || args[*pos] == "-or") {
+        *pos += 1;
+        let right = parse_and(args, pos, cwd);
+        left = FindExpr::Or(Box::new(left), Box::new(right));
+    }
+    left
+}
+
+fn parse_and(args: &[&str], pos: &mut usize, cwd: &str) -> FindExpr {
+    let mut left = parse_not(args, pos, cwd);
+    loop {
+        if *pos >= args.len() { break; }
+        if args[*pos] == "-o" || args[*pos] == "-or" || args[*pos] == ")" { break; }
+        if args[*pos] == "-a" || args[*pos] == "-and" {
+            *pos += 1;
+        }
+        if *pos >= args.len() || args[*pos] == "-o" || args[*pos] == "-or" || args[*pos] == ")" { break; }
+        let right = parse_not(args, pos, cwd);
+        left = FindExpr::And(Box::new(left), Box::new(right));
+    }
+    left
+}
+
+fn parse_not(args: &[&str], pos: &mut usize, cwd: &str) -> FindExpr {
+    if *pos < args.len() && (args[*pos] == "!" || args[*pos] == "-not") {
+        *pos += 1;
+        let inner = parse_not(args, pos, cwd);
+        return FindExpr::Not(Box::new(inner));
+    }
+    parse_primary(args, pos, cwd)
+}
+
+fn parse_primary(args: &[&str], pos: &mut usize, cwd: &str) -> FindExpr {
+    if *pos >= args.len() {
+        return FindExpr::True;
+    }
+    match args[*pos] {
+        "(" => {
+            *pos += 1;
+            let expr = parse_or(args, pos, cwd);
+            if *pos < args.len() && args[*pos] == ")" {
+                *pos += 1;
+            }
+            expr
+        }
+        "-name" if *pos + 1 < args.len() => {
+            *pos += 1;
+            let pat = args[*pos].to_string();
+            *pos += 1;
+            FindExpr::Name(pat, false)
+        }
+        "-iname" if *pos + 1 < args.len() => {
+            *pos += 1;
+            let pat = args[*pos].to_string();
+            *pos += 1;
+            FindExpr::Name(pat, true)
+        }
+        "-path" if *pos + 1 < args.len() => {
+            *pos += 1;
+            let pat = args[*pos].to_string();
+            *pos += 1;
+            FindExpr::Path(pat)
+        }
+        "-type" if *pos + 1 < args.len() => {
+            *pos += 1;
+            let t = args[*pos].chars().next().unwrap_or('f');
+            *pos += 1;
+            FindExpr::Type(t)
+        }
+        "-empty" => { *pos += 1; FindExpr::Empty }
+        "-size" if *pos + 1 < args.len() => {
+            *pos += 1;
+            let s = args[*pos].to_string();
+            *pos += 1;
+            FindExpr::Size(s)
+        }
+        "-mtime" if *pos + 1 < args.len() => {
+            *pos += 1;
+            let s = args[*pos].to_string();
+            *pos += 1;
+            FindExpr::Mtime(s)
+        }
+        "-newer" if *pos + 1 < args.len() => {
+            *pos += 1;
+            let resolved = crate::fs::path::resolve(cwd, args[*pos]);
+            *pos += 1;
+            FindExpr::Newer(resolved)
+        }
+        "-exec" => {
+            *pos += 1;
+            let mut parts = Vec::new();
+            while *pos < args.len() && args[*pos] != ";" {
+                parts.push(args[*pos].to_string());
+                *pos += 1;
+            }
+            if *pos < args.len() { *pos += 1; }
+            FindExpr::Exec(parts)
+        }
+        "-print" => { *pos += 1; FindExpr::Print }
+        "-print0" => { *pos += 1; FindExpr::Print0 }
+        "-delete" => { *pos += 1; FindExpr::Delete }
+        _ => { *pos += 1; FindExpr::True }
+    }
+}
+
+fn expr_has_action(e: &FindExpr) -> bool {
+    match e {
+        FindExpr::Print | FindExpr::Print0 | FindExpr::Delete | FindExpr::Exec(_) => true,
+        FindExpr::Not(inner) => expr_has_action(inner),
+        FindExpr::And(l, r) | FindExpr::Or(l, r) => expr_has_action(l) || expr_has_action(r),
+        _ => false,
+    }
+}
+
+fn expr_find_newer(e: &FindExpr) -> Option<&str> {
+    match e {
+        FindExpr::Newer(p) => Some(p),
+        FindExpr::Not(inner) => expr_find_newer(inner),
+        FindExpr::And(l, r) | FindExpr::Or(l, r) => expr_find_newer(l).or_else(|| expr_find_newer(r)),
+        _ => None,
+    }
 }
 
 pub fn find_cmd(args: &[&str], ctx: &mut CommandContext<'_>) -> Result<ExecResult, Error> {
     let mut paths = Vec::new();
-    let mut opts = FindOpts {
-        name_pattern: None,
-        iname_pattern: None,
-        path_pattern: None,
-        type_filter: None,
-        empty: false,
+    let mut globals = FindGlobals {
         maxdepth: None,
         mindepth: None,
-        print0: false,
-        delete: false,
-        size_spec: None,
-        mtime_spec: None,
-        newer_file: None,
-        exec_cmd: Vec::new(),
+        has_print_action: false,
+        newer_mtime: None,
     };
 
-    let mut i = 0;
-    while i < args.len() {
-        match args[i] {
-            "-name" if i + 1 < args.len() => {
-                opts.name_pattern = Some(args[i + 1]);
-                i += 2;
-            }
-            "-iname" if i + 1 < args.len() => {
-                opts.iname_pattern = Some(args[i + 1]);
-                i += 2;
-            }
-            "-path" if i + 1 < args.len() => {
-                opts.path_pattern = Some(args[i + 1]);
-                i += 2;
-            }
-            "-type" if i + 1 < args.len() => {
-                opts.type_filter = args[i + 1].chars().next();
-                i += 2;
-            }
-            "-empty" => {
-                opts.empty = true;
-                i += 1;
-            }
+    let mut pred_start = 0;
+    for (i, arg) in args.iter().enumerate() {
+        match *arg {
             "-maxdepth" if i + 1 < args.len() => {
-                opts.maxdepth = args[i + 1].parse().ok();
-                i += 2;
+                globals.maxdepth = args[i + 1].parse().ok();
+                pred_start = i + 2;
             }
             "-mindepth" if i + 1 < args.len() => {
-                opts.mindepth = args[i + 1].parse().ok();
-                i += 2;
+                globals.mindepth = args[i + 1].parse().ok();
+                pred_start = i + 2;
             }
-            "-size" if i + 1 < args.len() => {
-                opts.size_spec = Some(args[i + 1].to_string());
-                i += 2;
+            a if !a.starts_with('-') && !a.starts_with('(') && !a.starts_with('!') && pred_start == i => {
+                paths.push(*arg);
+                pred_start = i + 1;
             }
-            "-mtime" if i + 1 < args.len() => {
-                opts.mtime_spec = Some(args[i + 1].to_string());
-                i += 2;
-            }
-            "-newer" if i + 1 < args.len() => {
-                let resolved = crate::fs::path::resolve(ctx.cwd, args[i + 1]);
-                opts.newer_file = Some(resolved);
-                i += 2;
-            }
-            "-exec" => {
-                i += 1;
-                let mut cmd_parts = Vec::new();
-                while i < args.len() && args[i] != ";" {
-                    cmd_parts.push(args[i].to_string());
-                    i += 1;
-                }
-                if i < args.len() {
-                    i += 1; // skip the ";"
-                }
-                opts.exec_cmd = cmd_parts;
-            }
-            "-print" => {
-                i += 1;
-            }
-            "-print0" => {
-                opts.print0 = true;
-                i += 1;
-            }
-            "-delete" => {
-                opts.delete = true;
-                i += 1;
-            }
-            arg if !arg.starts_with('-') => {
-                paths.push(arg);
-                i += 1;
-            }
-            _ => {
-                i += 1;
-            }
+            _ => { break; }
         }
     }
 
-    if paths.is_empty() {
-        paths.push(".");
+    let pred_args: Vec<&str> = args[pred_start..].to_vec();
+    let expr = if pred_args.is_empty() {
+        FindExpr::True
+    } else {
+        let filtered: Vec<&str> = {
+            let mut out = Vec::new();
+            let mut j = 0;
+            while j < pred_args.len() {
+                match pred_args[j] {
+                    "-maxdepth" | "-mindepth" if j + 1 < pred_args.len() => {
+                        if pred_args[j] == "-maxdepth" { globals.maxdepth = pred_args[j + 1].parse().ok(); }
+                        else { globals.mindepth = pred_args[j + 1].parse().ok(); }
+                        j += 2;
+                    }
+                    _ => { out.push(pred_args[j]); j += 1; }
+                }
+            }
+            out
+        };
+        let mut fpos = 0;
+        parse_find_expr(&filtered, &mut fpos, ctx.cwd)
+    };
+
+    globals.has_print_action = expr_has_action(&expr);
+
+    if let Some(p) = expr_find_newer(&expr) {
+        globals.newer_mtime = ctx.fs.stat(p).ok().map(|m| m.mtime);
     }
 
-    let newer_mtime = opts.newer_file.as_ref().and_then(|p| {
-        ctx.fs.stat(p).ok().map(|m| m.mtime)
-    });
+    if paths.is_empty() { paths.push("."); }
 
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -229,25 +323,13 @@ pub fn find_cmd(args: &[&str], ctx: &mut CommandContext<'_>) -> Result<ExecResul
 
     for start_path in &paths {
         let resolved = crate::fs::path::resolve(ctx.cwd, start_path);
-        find_walk(
-            ctx,
-            &resolved,
-            &opts,
-            0,
-            newer_mtime.as_ref(),
-            &mut stdout,
-            &mut stderr,
-            &mut exit_code,
-            &mut to_delete,
-        );
+        find_walk(ctx, &resolved, &expr, &globals, 0, &mut stdout, &mut stderr, &mut exit_code, &mut to_delete);
     }
 
-    if opts.delete {
-        for path in to_delete.iter().rev() {
-            if let Err(e) = ctx.fs.rm(path, false, false) {
-                let _ = writeln!(stderr, "find: cannot delete '{path}': {e}");
-                exit_code = 1;
-            }
+    for path in to_delete.iter().rev() {
+        if let Err(e) = ctx.fs.rm(path, false, false) {
+            let _ = writeln!(stderr, "find: cannot delete '{path}': {e}");
+            exit_code = 1;
         }
     }
 
@@ -258,18 +340,16 @@ pub fn find_cmd(args: &[&str], ctx: &mut CommandContext<'_>) -> Result<ExecResul
 fn find_walk(
     ctx: &CommandContext<'_>,
     path: &str,
-    opts: &FindOpts<'_>,
+    expr: &FindExpr,
+    globals: &FindGlobals,
     depth: usize,
-    newer_mtime: Option<&std::time::SystemTime>,
     stdout: &mut String,
     stderr: &mut String,
     exit_code: &mut i32,
     to_delete: &mut Vec<String>,
 ) {
-    if let Some(max) = opts.maxdepth {
-        if depth > max {
-            return;
-        }
+    if globals.maxdepth.is_some_and(|max| depth > max) {
+        return;
     }
 
     let meta = match ctx.fs.lstat(path) {
@@ -281,36 +361,13 @@ fn find_walk(
         }
     };
 
-    let name = crate::fs::path::basename(path);
-    let matches = find_matches(ctx, path, name, &meta, opts, newer_mtime);
+    let above_mindepth = globals.mindepth.is_none_or(|min| depth >= min);
 
-    let above_mindepth = opts.mindepth.is_none_or(|min| depth >= min);
+    if above_mindepth {
+        let name = crate::fs::path::basename(path);
+        eval_expr(ctx, path, name, &meta, expr, globals, stdout, stderr, exit_code, to_delete);
 
-    if matches && above_mindepth {
-        if !opts.exec_cmd.is_empty() {
-            let cmd_str: String = opts.exec_cmd.iter().map(|part| {
-                if part == "{}" { path.to_string() } else { part.clone() }
-            }).collect::<Vec<_>>().join(" ");
-            if let Some(exec_fn) = ctx.exec_fn {
-                match exec_fn(&cmd_str) {
-                    Ok(result) => {
-                        stdout.push_str(&result.stdout);
-                        stderr.push_str(&result.stderr);
-                        if result.exit_code != 0 {
-                            *exit_code = result.exit_code;
-                        }
-                    }
-                    Err(_) => {
-                        *exit_code = 1;
-                    }
-                }
-            }
-        } else if opts.delete {
-            to_delete.push(path.to_string());
-        } else if opts.print0 {
-            stdout.push_str(path);
-            stdout.push('\0');
-        } else {
+        if !globals.has_print_action && eval_filter(ctx, path, name, &meta, expr, globals) {
             let _ = writeln!(stdout, "{path}");
         }
     }
@@ -325,74 +382,114 @@ fn find_walk(
                 } else {
                     format!("{path}/{}", entry.name)
                 };
-                find_walk(ctx, &child, opts, depth + 1, newer_mtime, stdout, stderr, exit_code, to_delete);
+                find_walk(ctx, &child, expr, globals, depth + 1, stdout, stderr, exit_code, to_delete);
             }
         }
     }
 }
 
-fn find_matches(
+#[allow(clippy::too_many_arguments)]
+fn eval_expr(
     ctx: &CommandContext<'_>,
     path: &str,
     name: &str,
     meta: &crate::fs::Metadata,
-    opts: &FindOpts<'_>,
-    newer_mtime: Option<&std::time::SystemTime>,
+    expr: &FindExpr,
+    globals: &FindGlobals,
+    stdout: &mut String,
+    stderr: &mut String,
+    exit_code: &mut i32,
+    to_delete: &mut Vec<String>,
 ) -> bool {
-    if let Some(pat) = opts.name_pattern {
-        if !glob_match(pat, name, false) {
-            return false;
-        }
-    }
-    if let Some(pat) = opts.iname_pattern {
-        if !glob_match(pat, name, true) {
-            return false;
-        }
-    }
-    if let Some(pat) = opts.path_pattern {
-        if !glob_match(pat, path, false) {
-            return false;
-        }
-    }
-    if let Some(t) = opts.type_filter {
-        let matches_type = match t {
+    match expr {
+        FindExpr::True => true,
+        FindExpr::Name(pat, ic) => glob_match(pat, name, *ic),
+        FindExpr::Path(pat) => glob_match(pat, path, false),
+        FindExpr::Type(t) => match *t {
             'f' => meta.is_file(),
             'd' => meta.is_dir(),
             'l' => meta.is_symlink(),
             _ => true,
-        };
-        if !matches_type {
-            return false;
+        },
+        FindExpr::Empty => {
+            if meta.is_file() { meta.size == 0 }
+            else if meta.is_dir() { ctx.fs.readdir(path).map_or(true, |e| e.is_empty()) }
+            else { false }
         }
-    }
-    if opts.empty {
-        if meta.is_file() && meta.size != 0 {
-            return false;
+        FindExpr::Size(spec) => match_size(meta.size, spec),
+        FindExpr::Mtime(spec) => match_mtime(meta.mtime, spec),
+        FindExpr::Newer(_) => globals.newer_mtime.is_none_or(|ref_time| meta.mtime > ref_time),
+        FindExpr::Print => {
+            let _ = writeln!(stdout, "{path}");
+            true
         }
-        if meta.is_dir() {
-            if let Ok(entries) = ctx.fs.readdir(path) {
-                if !entries.is_empty() {
-                    return false;
+        FindExpr::Print0 => {
+            stdout.push_str(path);
+            stdout.push('\0');
+            true
+        }
+        FindExpr::Delete => {
+            to_delete.push(path.to_string());
+            true
+        }
+        FindExpr::Exec(parts) => {
+            let cmd_str: String = parts.iter().map(|p| {
+                if p == "{}" { path.to_string() } else { p.clone() }
+            }).collect::<Vec<_>>().join(" ");
+            if let Some(exec_fn) = ctx.exec_fn {
+                if let Ok(result) = exec_fn(&cmd_str) {
+                    stdout.push_str(&result.stdout);
+                    stderr.push_str(&result.stderr);
+                    if result.exit_code != 0 { *exit_code = result.exit_code; }
+                    result.exit_code == 0
+                } else {
+                    *exit_code = 1;
+                    false
                 }
-            }
+            } else { false }
+        }
+        FindExpr::Not(inner) => !eval_expr(ctx, path, name, meta, inner, globals, stdout, stderr, exit_code, to_delete),
+        FindExpr::And(l, r) => {
+            eval_expr(ctx, path, name, meta, l, globals, stdout, stderr, exit_code, to_delete)
+                && eval_expr(ctx, path, name, meta, r, globals, stdout, stderr, exit_code, to_delete)
+        }
+        FindExpr::Or(l, r) => {
+            eval_expr(ctx, path, name, meta, l, globals, stdout, stderr, exit_code, to_delete)
+                || eval_expr(ctx, path, name, meta, r, globals, stdout, stderr, exit_code, to_delete)
         }
     }
-    if let Some(ref spec) = opts.size_spec {
-        if !match_size(meta.size, spec) {
-            return false;
+}
+
+fn eval_filter(
+    ctx: &CommandContext<'_>,
+    path: &str,
+    name: &str,
+    meta: &crate::fs::Metadata,
+    expr: &FindExpr,
+    globals: &FindGlobals,
+) -> bool {
+    match expr {
+        FindExpr::True | FindExpr::Print | FindExpr::Print0 | FindExpr::Delete | FindExpr::Exec(_) => true,
+        FindExpr::Name(pat, ic) => glob_match(pat, name, *ic),
+        FindExpr::Path(pat) => glob_match(pat, path, false),
+        FindExpr::Type(t) => match *t {
+            'f' => meta.is_file(),
+            'd' => meta.is_dir(),
+            'l' => meta.is_symlink(),
+            _ => true,
+        },
+        FindExpr::Empty => {
+            if meta.is_file() { meta.size == 0 }
+            else if meta.is_dir() { ctx.fs.readdir(path).map_or(true, |e| e.is_empty()) }
+            else { false }
         }
+        FindExpr::Size(spec) => match_size(meta.size, spec),
+        FindExpr::Mtime(spec) => match_mtime(meta.mtime, spec),
+        FindExpr::Newer(_) => globals.newer_mtime.is_none_or(|ref_time| meta.mtime > ref_time),
+        FindExpr::Not(inner) => !eval_filter(ctx, path, name, meta, inner, globals),
+        FindExpr::And(l, r) => eval_filter(ctx, path, name, meta, l, globals) && eval_filter(ctx, path, name, meta, r, globals),
+        FindExpr::Or(l, r) => eval_filter(ctx, path, name, meta, l, globals) || eval_filter(ctx, path, name, meta, r, globals),
     }
-    if let Some(ref spec) = opts.mtime_spec {
-        if !match_mtime(meta.mtime, spec) {
-            return false;
-        }
-    }
-    if let Some(ref_time) = newer_mtime {
-        if meta.mtime <= *ref_time {
-            return false;
-        }
-    }
-    true
 }
 
 fn match_size(actual: u64, spec: &str) -> bool {
